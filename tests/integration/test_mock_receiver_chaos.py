@@ -128,17 +128,32 @@ class TestRateLimitBehavior:
         assert result.retry_after_seconds == 2.0
 
 
-class TestTimeoutBehavior:
-    async def test_timeout_is_classified_as_a_transport_failure(
+class TestTimeoutBehaviorLimitation:
+    """`httpx.ASGITransport` calls the ASGI app in-process directly —
+    there's no real socket I/O for `httpx.Timeout` to attach to, so a
+    client-side timeout can never actually fire through this transport.
+    This was discovered via a real (failing) test run: a fixture with a
+    2s timeout against a 5s simulated sleep completed successfully in
+    ~5s instead of raising `ReadTimeout` at ~2s.
+
+    The mock receiver's `timeout` behavior is still meaningful against a
+    real running instance (e.g. docker-compose with a live uvicorn
+    server, where a genuine socket read timeout would apply) — just not
+    exercisable through this in-process harness. The actual "DART
+    classifies a timeout as a retryable transport failure" behavior is
+    tested via `respx` in `test_dispatcher_e2e.py::TestTransportLevelFailures`
+    instead, since `respx` can raise `httpx.ReadTimeout` directly as a
+    mocked side effect without needing real timing to elapse.
+    """
+
+    async def test_timeout_endpoint_itself_eventually_responds_ok(
         self, dispatcher: AsyncDispatcher
     ) -> None:
-        # The dispatcher's http_client in this fixture has a 2s timeout;
-        # the mock receiver is told to sleep for 5s, guaranteeing a
-        # client-side ReadTimeout classified with status_code=None.
-        result = await dispatcher.dispatch(_make_task("timeout", timeout_seconds=5))
-        assert result.success is False
-        assert result.status_code is None
-        assert result.error is not None
+        # Confirms the mock receiver's own sleep-then-respond behavior
+        # works as intended — NOT a test of DART's timeout handling.
+        result = await dispatcher.dispatch(_make_task("timeout", timeout_seconds=0.1))
+        assert result.success is True
+        assert result.status_code == 200
 
 
 class TestCircuitBreakerRecordsRealOutcomes:
