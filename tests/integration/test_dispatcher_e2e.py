@@ -127,6 +127,7 @@ class TestSuccessfulDelivery:
         respx.post(TARGET_URL).mock(return_value=httpx.Response(200))
         task = _make_task()
         await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)  # mirrors what process_one() does before dispatch
 
         result = await dispatcher.dispatch(task)
         assert result.success is True
@@ -165,6 +166,7 @@ class TestRetryThenSuccess:
         respx.post(TARGET_URL).mock(side_effect=[httpx.Response(500), httpx.Response(200)])
         task = _make_task()
         await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
 
         # First attempt: 500 -> retry scheduled.
         result1 = await dispatcher.dispatch(task)
@@ -196,6 +198,7 @@ class TestImmediateDLQ:
         respx.post(TARGET_URL).mock(return_value=httpx.Response(400))
         task = _make_task()
         await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
 
         result = await dispatcher.dispatch(task)
         assert result.success is False
@@ -216,6 +219,7 @@ class TestRetryExhaustion:
         respx.post(TARGET_URL).mock(return_value=httpx.Response(500))
         task = _make_task(max_attempts=3)
         await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
 
         statuses = []
         for _ in range(3):
@@ -242,6 +246,7 @@ class TestRetryAfterOverride:
         )
         task = _make_task()
         await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
 
         result = await dispatcher.dispatch(task)
         assert result.retry_after_seconds == 45.0
@@ -281,6 +286,53 @@ class TestCircuitBreakerIsolation:
         healthy_result = await dispatcher.dispatch(healthy_task)
         assert healthy_result.success is True
         assert healthy_result.circuit_open is False
+
+
+class TestTransportLevelFailures:
+    """Timeout/connection-error classification. Deliberately tested here
+    via `respx` raising an exception as a mocked side effect, NOT via
+    `test_mock_receiver_chaos.py`'s ASGI-transport harness — real
+    timing-based timeouts cannot be simulated through `ASGITransport`
+    (see `TestTimeoutBehaviorLimitation` in that file for why)."""
+
+    @respx.mock
+    async def test_read_timeout_is_a_retryable_transport_failure(
+        self,
+        dispatcher: AsyncDispatcher,
+        job_store: JobStore,
+        retry_scheduler: RetryScheduler,
+    ) -> None:
+        respx.post(TARGET_URL).mock(side_effect=httpx.ReadTimeout("simulated read timeout"))
+        task = _make_task()
+        await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
+
+        result = await dispatcher.dispatch(task)
+        assert result.success is False
+        assert result.status_code is None
+        assert result.error is not None
+
+        status = await dispatcher.handle_outcome(task, result)
+        assert status == TaskStatus.RETRY_SCHEDULED
+        assert await retry_scheduler.count_pending() == 1
+
+    @respx.mock
+    async def test_connect_error_is_a_retryable_transport_failure(
+        self, dispatcher: AsyncDispatcher, job_store: JobStore
+    ) -> None:
+        respx.post(TARGET_URL).mock(
+            side_effect=httpx.ConnectError("simulated connection refused")
+        )
+        task = _make_task()
+        await job_store.save(task)
+        task.transition_to(TaskStatus.IN_FLIGHT)
+
+        result = await dispatcher.dispatch(task)
+        assert result.success is False
+        assert result.status_code is None
+
+        status = await dispatcher.handle_outcome(task, result)
+        assert status == TaskStatus.RETRY_SCHEDULED
 
 
 class TestCrashRecovery:
@@ -327,11 +379,13 @@ class TestCrashRecovery:
         reclaimed = await ready_queue.claim_stale("consumer-b", min_idle_ms=0, count=10)
         assert reclaimed == [(crashed_entry_id, task.task_id)]
 
-        # The reclaiming consumer can now process and ack it normally.
-        result = await dispatcher.dispatch(task)
-        assert result.success is True
-        await dispatcher.handle_outcome(task, result)
-        await ready_queue.ack(crashed_entry_id)
+        # The reclaiming consumer processes it via the real process_one()
+        # — not a hand-rolled dispatch()+handle_outcome()+ack() sequence,
+        # since process_one() is what actually handles the PENDING ->
+        # IN_FLIGHT transition a fresh (never-attempted) reclaimed task
+        # still needs before it can be dispatched.
+        entry_id, reclaimed_task_id = reclaimed[0]
+        await dispatcher.process_one(entry_id, reclaimed_task_id)
 
         stored = await job_store.get(task.task_id)
         assert stored is not None
