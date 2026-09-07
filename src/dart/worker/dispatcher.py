@@ -240,8 +240,19 @@ class AsyncDispatcher:
         await self._dlq.add(task, reason=result.error or "max attempts exhausted")
         return TaskStatus.DEAD_LETTERED
 
-    async def _process_one(self, entry_id: str, task_id: UUID) -> None:
-        """Fetch, dispatch, route, and ack a single stream entry."""
+    async def process_one(self, entry_id: str, task_id: UUID) -> None:
+        """Fetch, transition to IN_FLIGHT, dispatch, route the outcome,
+        and ack a single already-claimed stream entry.
+
+        Public (not `_process_one`) deliberately: it's the correct,
+        state-machine-safe way to drive a single task through dispatch
+        from a stream entry, and tests should use it directly rather
+        than hand-rolling the same sequence — a hand-rolled version in
+        this codebase's own test suite once forgot the PENDING ->
+        IN_FLIGHT transition `dispatch()`/`handle_outcome()` require,
+        which is exactly the class of mistake exposing this as a public
+        method guards against.
+        """
         task = await self._job_store.get(task_id)
         if task is None:
             logger.warning(
@@ -287,10 +298,10 @@ class AsyncDispatcher:
                 consumer_name, min_idle_ms=stale_min_idle_ms, count=batch_size
             )
             for entry_id, task_id in reclaimed:
-                await self._process_one(entry_id, task_id)
+                await self.process_one(entry_id, task_id)
 
             entries = await self._ready_queue.read_new(
                 consumer_name, count=batch_size, block_ms=block_ms
             )
             for entry_id, task_id in entries:
-                await self._process_one(entry_id, task_id)
+                await self.process_one(entry_id, task_id)
