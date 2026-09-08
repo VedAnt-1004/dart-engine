@@ -103,6 +103,24 @@ class SecuritySettings(BaseSettings):
     signature_tolerance_seconds: int = Field(default=300, ge=0)
 
 
+class WorkerSettings(BaseSettings):
+    """Tuning for the dispatch worker's `XREADGROUP` consumer loop.
+
+    Not previously exposed via `Settings`/env vars — `worker/runner.py`
+    called `run_worker_loop` with its hardcoded defaults regardless of
+    deployment. Added so `stale_min_idle_ms` in particular (how long an
+    unacked entry sits before another worker may reclaim it) can be
+    tuned per-deployment without a code change — e.g. much lower in a
+    fast-recovery test environment than the 30s production default.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="DART_WORKER_", extra="ignore")
+
+    batch_size: int = Field(default=10, ge=1)
+    block_ms: int = Field(default=5000, ge=0)
+    stale_min_idle_ms: int = Field(default=30_000, ge=0)
+
+
 class Settings(BaseSettings):
     """Root application settings, composed of the scoped groups above.
 
@@ -125,3 +143,4 @@ class Settings(BaseSettings):
     retry: RetrySettings = Field(default_factory=RetrySettings)
     circuit_breaker: CircuitBreakerSettings = Field(default_factory=CircuitBreakerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    worker: WorkerSettings = Field(default_factory=WorkerSettings)
