@@ -97,7 +97,13 @@ async def _run(settings: Settings, consumer_name: str) -> None:
 
     logger.info("dart-worker starting", extra={"consumer_name": consumer_name})
     try:
-        await dispatcher.run_worker_loop(consumer_name, stop_event=stop_event)
+        await dispatcher.run_worker_loop(
+            consumer_name,
+            batch_size=settings.worker.batch_size,
+            block_ms=settings.worker.block_ms,
+            stale_min_idle_ms=settings.worker.stale_min_idle_ms,
+            stop_event=stop_event,
+        )
     finally:
         await http_client.aclose()
         await redis_client.aclose()
