@@ -59,6 +59,14 @@ class DispatchResult:
     """True if the attempt was skipped entirely because the domain's
     circuit breaker denied it — distinct from an actual network/HTTP
     failure, since no request was sent at all."""
+    exception: Exception | None = None
+    """The actual transport-level exception `dispatch()` caught, if any.
+    Distinct from `error` (a string, suitable for logging/storage as
+    `last_error`) — `handle_outcome()` needs the real exception object to
+    forward to `RetryPolicy.should_retry()`, whose contract treats
+    `exception is not None` as unconditionally retryable regardless of
+    `status_code` (which is always `None` for a transport failure,
+    since no HTTP response was ever received)."""
 
 
 def _extract_domain(url: str) -> str:
@@ -167,6 +175,7 @@ class AsyncDispatcher:
                 latency_ms=latency_ms,
                 error=str(exc),
                 retry_after_seconds=None,
+                exception=exc,
             )
 
         latency_ms = (time.monotonic() - start) * 1000
@@ -221,7 +230,7 @@ class AsyncDispatcher:
             should_retry = self._retry_policy.should_retry(
                 attempt=task.attempt_count,
                 status_code=result.status_code,
-                exception=None,
+                exception=result.exception,
             )
 
         if should_retry:
