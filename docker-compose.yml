@@ -1,0 +1,69 @@
+# Real multi-process DART topology, for black-box testing against
+# actual Redis and actual separate worker/scheduler/API processes --
+# not fakeredis. See scripts/blackbox_crash_recovery_test.py for the
+# automated crash-recovery scenario this stack exists to support.
+#
+# Quick start:
+#   docker compose up -d --build
+#   curl http://localhost:8000/healthz
+#   docker compose down -v
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # The chaos receiver, reachable by dart-worker via the internal Docker
+  # network as http://mock-receiver:8000 -- and by the host (for manual
+  # poking) at http://localhost:8100.
+  mock-receiver:
+    build: .
+    command: ["uvicorn", "dart.testing.mock_receiver:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8100:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  dart-api:
+    build: .
+    command: ["dart-api"]
+    ports:
+      - "8000:8000"
+    environment:
+      DART_REDIS_HOST: redis
+      DART_ENVIRONMENT: development
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  dart-worker:
+    build: .
+    command: ["dart-worker"]
+    environment:
+      DART_REDIS_HOST: redis
+      # Reference/secret pair used by the black-box test's task; a real
+      # deployment would set one DART_SIGNING_SECRET__<id> per tenant.
+      DART_SIGNING_SECRET__blackbox_test_secret: "whsec_blackbox_test_only"
+      # Fast recovery tuning for testing -- production would likely use
+      # the 30s default rather than reclaiming after only 3s of silence.
+      DART_WORKER_STALE_MIN_IDLE_MS: "3000"
+      DART_WORKER_BLOCK_MS: "1000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  dart-scheduler:
+    build: .
+    command: ["dart-scheduler"]
+    environment:
+      DART_REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
