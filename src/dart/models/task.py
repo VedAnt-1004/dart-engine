@@ -83,6 +83,7 @@ class WebhookTask(BaseModel):
     event_type: str = Field(min_length=1)
     target_url: HttpUrl
     payload: dict[str, Any]
+    metadata: dict[str, Any] | None = None
     idempotency_key: str = Field(min_length=1)
     signing_secret_id: str = Field(min_length=1)
     status: TaskStatus = TaskStatus.PENDING
@@ -131,6 +132,11 @@ class WebhookTask(BaseModel):
             "event_type": self.event_type,
             "target_url": str(self.target_url),
             "payload": json.dumps(self.payload, separators=(",", ":")),
+            "metadata": (
+                json.dumps(self.metadata, separators=(",", ":"))
+                if self.metadata is not None
+                else ""
+            ),
             "idempotency_key": self.idempotency_key,
             "signing_secret_id": self.signing_secret_id,
             "status": self.status.value,
@@ -153,14 +159,16 @@ class WebhookTask(BaseModel):
         """Reconstruct a `WebhookTask` from a `dart:job:<task_id>` Redis
         hash, inverting `to_redis_hash`.
 
-        Empty-string sentinels for optional fields (`next_attempt_at`,
-        `last_status_code`, `last_error`) map back to `None`.
+        Empty-string sentinels for optional fields (`metadata`,
+        `next_attempt_at`, `last_status_code`, `last_error`) map back to
+        `None`.
         """
 
         def _optional(key: str) -> str | None:
             value = data.get(key, "")
             return value or None
 
+        metadata_raw = _optional("metadata")
         next_attempt_raw = _optional("next_attempt_at")
         last_status_code_raw = _optional("last_status_code")
 
@@ -169,6 +177,7 @@ class WebhookTask(BaseModel):
             event_type=data["event_type"],
             target_url=data["target_url"],  # type: ignore[arg-type]
             payload=json.loads(data["payload"]),
+            metadata=json.loads(metadata_raw) if metadata_raw else None,
             idempotency_key=data["idempotency_key"],
             signing_secret_id=data["signing_secret_id"],
             status=TaskStatus(data["status"]),
