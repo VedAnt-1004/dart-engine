@@ -89,6 +89,18 @@ class TestFieldValidation:
         assert task.last_error is None
         assert task.next_attempt_at is None
 
+    def test_metadata_defaults_to_none(self) -> None:
+        task = make_task()
+        assert task.metadata is None
+
+    def test_metadata_accepts_a_mapping(self) -> None:
+        task = make_task(metadata={"source": "billing-service", "trace_id": "trc_1"})
+        assert task.metadata == {"source": "billing-service", "trace_id": "trc_1"}
+
+    def test_rejects_non_mapping_metadata(self) -> None:
+        with pytest.raises(ValidationError):
+            make_task(metadata="not-a-dict")  # type: ignore[arg-type]
+
 
 class TestIsValidTransitionPureFunction:
     @pytest.mark.parametrize(
@@ -208,26 +220,37 @@ class TestRedisHashRoundTrip:
         original = make_task(
             status=TaskStatus.IN_FLIGHT,
             attempt_count=3,
+            metadata={"source": "billing-service", "trace_id": "trc_1"},
             next_attempt_at=datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
             last_status_code=503,
             last_error="Service Unavailable: upstream timeout after 10s",
         )
         restored = WebhookTask.from_redis_hash(original.to_redis_hash())
         assert restored == original
+        assert restored.metadata == {"source": "billing-service", "trace_id": "trc_1"}
         assert restored.next_attempt_at == original.next_attempt_at
         assert restored.last_status_code == 503
         assert restored.last_error == original.last_error
 
     def test_round_trip_with_optional_fields_unset(self) -> None:
         original = make_task()
+        assert original.metadata is None
         assert original.next_attempt_at is None
         assert original.last_status_code is None
         assert original.last_error is None
 
         restored = WebhookTask.from_redis_hash(original.to_redis_hash())
+        assert restored.metadata is None
         assert restored.next_attempt_at is None
         assert restored.last_status_code is None
         assert restored.last_error is None
+
+    def test_round_trip_preserves_nested_metadata_structure(self) -> None:
+        original = make_task(
+            metadata={"trace_id": "trc_1", "tags": ["retry", "priority"], "internal": None}
+        )
+        restored = WebhookTask.from_redis_hash(original.to_redis_hash())
+        assert restored.metadata == original.metadata
 
     def test_round_trip_preserves_nested_payload_structure(self) -> None:
         original = make_task(
@@ -252,6 +275,7 @@ class TestRedisHashRoundTrip:
     def test_to_redis_hash_uses_empty_string_sentinel_for_none(self) -> None:
         task = make_task()
         hash_data = task.to_redis_hash()
+        assert hash_data["metadata"] == ""
         assert hash_data["next_attempt_at"] == ""
         assert hash_data["last_status_code"] == ""
         assert hash_data["last_error"] == ""
