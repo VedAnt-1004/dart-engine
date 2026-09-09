@@ -61,6 +61,7 @@ async def ingest_event(
         event_type=body.event_type,
         target_url=body.target_url,
         payload=body.payload,
+        metadata=body.metadata,
         idempotency_key=body.idempotency_key,
         signing_secret_id=body.signing_secret_id,
         max_attempts=body.max_attempts or settings.retry.max_attempts,
