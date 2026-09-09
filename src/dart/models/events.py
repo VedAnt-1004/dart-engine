@@ -20,11 +20,11 @@ from dart.models.task import TaskStatus
 class EventIngestRequest(BaseModel):
     """Request body for `POST /api/v1/events`.
 
-    Note: `metadata`, if supplied, is validated here but is not currently
-    persisted onto `WebhookTask` or forwarded to `target_url` — it's
-    accepted at the boundary per the ingestion-layer spec ("validating
-    payloads, target URLs, and metadata") but wiring it into the task
-    record is deferred; see the Phase 2 handoff notes.
+    Note: `metadata`, if supplied, is persisted onto `WebhookTask` (and
+    therefore round-trips through `dart:job:<task_id>`) but is never
+    forwarded to `target_url` — it's caller-side context for future
+    audit/observability tooling, not part of what the third party
+    receives.
     """
 
     event_type: str = Field(
