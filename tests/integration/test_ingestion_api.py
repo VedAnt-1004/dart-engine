@@ -48,6 +48,31 @@ class TestSuccessfulIngestion:
         assert job_hash["attempt_count"] == "0"
         assert json.loads(job_hash["payload"]) == VALID_BODY["payload"]
 
+    def test_persists_metadata_when_supplied(
+        self, api_client: TestClient, verify_redis_client: fakeredis.FakeRedis
+    ) -> None:
+        response = _post(
+            api_client,
+            idempotency_key="idem_metadata_persist_check",
+            metadata={"source": "billing-service", "trace_id": "trc_1"},
+        )
+        task_id = response.json()["task_id"]
+
+        job_hash = verify_redis_client.hgetall(f"dart:job:{task_id}")
+        assert json.loads(job_hash["metadata"]) == {
+            "source": "billing-service",
+            "trace_id": "trc_1",
+        }
+
+    def test_metadata_defaults_to_empty_sentinel_when_omitted(
+        self, api_client: TestClient, verify_redis_client: fakeredis.FakeRedis
+    ) -> None:
+        response = _post(api_client, idempotency_key="idem_no_metadata_check")
+        task_id = response.json()["task_id"]
+
+        job_hash = verify_redis_client.hgetall(f"dart:job:{task_id}")
+        assert job_hash["metadata"] == ""
+
     def test_enqueues_a_ready_stream_entry(
         self, api_client: TestClient, verify_redis_client: fakeredis.FakeRedis
     ) -> None:
