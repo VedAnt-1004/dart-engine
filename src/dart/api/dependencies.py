@@ -2,8 +2,8 @@
 
 Wires `Settings`, the shared Redis client (stored on `app.state` by the
 lifespan handler in `dart.api.app`), and the queue-layer collaborators
-(`JobStore`, `IdempotencyGuard`, `ReadyQueue`) into route handlers via
-`Depends(...)`.
+(`JobStore`, `EventIngestor`, `IdempotencyGuard`, `ReadyQueue`) into
+route handlers via `Depends(...)`.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from fastapi import Request
 
 from dart.core.config import Settings
 from dart.queue.idempotency import IdempotencyGuard
+from dart.queue.ingestion import EventIngestor
 from dart.queue.job_store import JobStore
 from dart.queue.ready_queue import ReadyQueue
 
@@ -41,7 +42,19 @@ def get_job_store(request: Request) -> JobStore:
     return JobStore(get_redis_client(request), settings.redis)
 
 
+def get_event_ingestor(request: Request) -> EventIngestor:
+    """Atomic idempotency-claim + job-persist + ready-stream-enqueue,
+    used by `POST /api/v1/events`. Supersedes the old sequential
+    `get_idempotency_guard` + `get_job_store` + `get_ready_queue`
+    combination for that specific route."""
+    settings = get_settings()
+    return EventIngestor(get_redis_client(request), settings.redis)
+
+
 def get_idempotency_guard(request: Request) -> IdempotencyGuard:
+    """Kept for any caller that wants a standalone idempotency check
+    outside the atomic ingestion path (e.g. future admin tooling); no
+    longer used by the ingestion route itself."""
     settings = get_settings()
     return IdempotencyGuard(
         get_redis_client(request),
@@ -51,5 +64,8 @@ def get_idempotency_guard(request: Request) -> IdempotencyGuard:
 
 
 def get_ready_queue(request: Request) -> ReadyQueue:
+    """Kept for any caller that wants to enqueue directly (e.g. a
+    future manual DLQ-replay endpoint); no longer used by the ingestion
+    route itself, which enqueues atomically via `EventIngestor`."""
     settings = get_settings()
     return ReadyQueue(get_redis_client(request), settings.redis)
