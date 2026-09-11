@@ -12,9 +12,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from dart.models.task import TaskStatus
+from dart.security.ssrf import is_blocked_literal_host
 
 
 class EventIngestRequest(BaseModel):
@@ -54,6 +55,32 @@ class EventIngestRequest(BaseModel):
         ge=1,
         description="Override the default max retry attempts for this event.",
     )
+
+    @field_validator("target_url")
+    @classmethod
+    def _reject_blocked_literal_hosts(cls, value: HttpUrl) -> HttpUrl:
+        """SSRF defense, layer 1 of 2: fast, synchronous, zero-I/O check
+        that rejects a `target_url` whose host is a LITERAL IP address
+        in a blocked range (loopback / RFC 1918 / link-local / multicast
+        / etc).
+
+        Deliberately does NOT resolve DNS hostnames — a synchronous
+        Pydantic validator can't `await`, and a blocking DNS lookup here
+        would stall the event loop for every other concurrent ingestion
+        request. A hostname that currently resolves to a public IP but
+        later resolves somewhere private is NOT caught at this layer;
+        that's exactly what `dart.worker.ssrf_transport.SSRFSafeTransport`
+        (layer 2, at dispatch time, right before the connection is
+        actually made) exists to close. See `dart.security.ssrf`'s
+        module docstring for the full two-layer rationale.
+        """
+        host = value.host
+        if host and is_blocked_literal_host(host):
+            raise ValueError(
+                f"target_url host {host!r} is a non-public address and is "
+                "not allowed."
+            )
+        return value
 
 
 class EventIngestResponse(BaseModel):
