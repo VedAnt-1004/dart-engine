@@ -42,6 +42,7 @@ from dart.queue.retry_scheduler import RetryScheduler
 from dart.resilience.circuit_breaker import CircuitBreaker
 from dart.resilience.retry_policy import RetryPolicy
 from dart.security.secrets import SigningSecretResolver
+from dart.worker.ssrf_transport import SSRFBlockedError
 
 logger = get_logger(__name__)
 
@@ -155,6 +156,34 @@ class AsyncDispatcher:
                     "X-DART-Signature": signature_header,
                     "X-DART-Event-Type": task.event_type,
                 },
+            )
+        except SSRFBlockedError as exc:
+            latency_ms = (time.monotonic() - start) * 1000
+            # Deliberately NOT recorded against the circuit breaker: an
+            # SSRF block is a security decision about this target, not
+            # a domain-health signal, and mixing the two would let a
+            # single rebinding attempt against a domain start
+            # circuit-breaking otherwise-legitimate future traffic to
+            # it. `exception` is left at its default (None) so
+            # `RetryPolicy.should_retry` falls through its "no status,
+            # no exception" branch -- non-retryable, straight to DLQ,
+            # since retrying an SSRF-blocked target can never succeed.
+            logger.warning(
+                "Dispatch attempt blocked by SSRF guard",
+                extra={
+                    "task_id": str(task.task_id),
+                    "target_url": str(task.target_url),
+                    "attempt": task.attempt_count,
+                    "latency_ms": latency_ms,
+                    "error": str(exc),
+                },
+            )
+            return DispatchResult(
+                success=False,
+                status_code=None,
+                latency_ms=latency_ms,
+                error=str(exc),
+                retry_after_seconds=None,
             )
         except httpx.HTTPError as exc:
             latency_ms = (time.monotonic() - start) * 1000
