@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 import fakeredis
+import pytest
 from fastapi.testclient import TestClient
 
 VALID_BODY: dict[str, Any] = {
@@ -172,6 +173,52 @@ class TestValidation:
     def test_rejects_zero_max_attempts(self, api_client: TestClient) -> None:
         response = _post(api_client, max_attempts=0)
         assert response.status_code == 422
+
+
+class TestSSRFIngestionValidation:
+    """Layer 1 of 2 (see dart.security.ssrf's module docstring):
+    rejects a target_url whose host is a LITERAL blocked IP. Does not
+    exercise DNS-hostname-based rejection -- that's dispatch-time-only,
+    covered by tests/unit/test_ssrf_transport.py instead."""
+
+    @pytest.mark.parametrize(
+        "target_url",
+        [
+            "http://127.0.0.1/hook",
+            "http://127.0.0.1:8080/hook",
+            "http://[::1]/hook",
+            "http://10.0.0.5/hook",
+            "http://172.16.0.1/hook",
+            "http://192.168.1.1/hook",
+            "http://169.254.169.254/latest/meta-data/",  # cloud metadata endpoint
+            "http://224.0.0.1/hook",  # multicast
+        ],
+    )
+    def test_rejects_literal_blocked_target_urls(
+        self, api_client: TestClient, target_url: str
+    ) -> None:
+        response = _post(api_client, target_url=target_url)
+        assert response.status_code == 422
+
+    def test_accepts_public_literal_ip_target_url(self, api_client: TestClient) -> None:
+        response = _post(
+            api_client, target_url="http://93.184.216.34/hook", idempotency_key="idem_public_ip"
+        )
+        assert response.status_code == 202
+
+    def test_accepts_dns_hostname_target_url_at_ingestion(
+        self, api_client: TestClient
+    ) -> None:
+        """A DNS hostname is NOT resolved at ingestion time (would
+        block the event loop) -- always accepted here regardless of
+        what it might resolve to. Dispatch-time validation is what
+        actually protects against a hostname resolving privately."""
+        response = _post(
+            api_client,
+            target_url="https://internal-looking-name.example.com/hook",
+            idempotency_key="idem_hostname_check",
+        )
+        assert response.status_code == 202
 
     def test_accepts_optional_metadata(self, api_client: TestClient) -> None:
         response = _post(
