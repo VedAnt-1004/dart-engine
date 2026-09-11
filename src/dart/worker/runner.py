@@ -28,13 +28,25 @@ from dart.resilience.circuit_breaker import CircuitBreaker
 from dart.resilience.retry_policy import RetryPolicy
 from dart.security.secrets import EnvSigningSecretResolver
 from dart.worker.dispatcher import AsyncDispatcher
+from dart.worker.ssrf_transport import SSRFSafeTransport
 
 logger = get_logger(__name__)
 
 
 def _build_http_client(settings: Settings) -> httpx.AsyncClient:
     """A long-lived, connection-pooled client with granular transport
-    timeouts — the Slowloris mitigation from the architecture spec."""
+    timeouts (the Slowloris mitigation from the architecture spec) and
+    SSRF-safe DNS pinning on every request.
+
+    The inner `httpx.AsyncHTTPTransport` is built explicitly (rather
+    than letting `AsyncClient(limits=...)` construct its own default)
+    because `SSRFSafeTransport` wraps it: once a client is given a
+    custom `transport=`, the client's own `limits` kwarg is silently
+    ignored — connection-pool limits only apply to a client's default
+    transport. Building the real transport with `limits` baked in and
+    handing it to the wrapper is what makes the pooling config actually
+    take effect.
+    """
     http_settings = settings.http_client
     timeout = httpx.Timeout(
         connect=http_settings.connect_timeout_seconds,
@@ -46,9 +58,10 @@ def _build_http_client(settings: Settings) -> httpx.AsyncClient:
         max_connections=http_settings.max_connections,
         max_keepalive_connections=http_settings.max_keepalive_connections,
     )
+    inner_transport = httpx.AsyncHTTPTransport(limits=limits)
     return httpx.AsyncClient(
+        transport=SSRFSafeTransport(inner_transport),
         timeout=timeout,
-        limits=limits,
         headers={"User-Agent": http_settings.user_agent},
     )
 
