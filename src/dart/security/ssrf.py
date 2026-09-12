@@ -78,17 +78,42 @@ def is_blocked_address(ip: IPAddress) -> bool:
     return in_named_blocklist or not ip.is_global or ip.is_multicast
 
 
+def parse_ip_literal(host: str) -> IPAddress | None:
+    """Parse `host` as a literal IP address, returning `None` if it
+    isn't one (i.e. it's a DNS hostname).
+
+    Strips a wrapping `[...]` first if present — IPv6 literals in a
+    URL's host component are conventionally bracket-wrapped per RFC
+    3986 (`http://[::1]/path`), but `ipaddress.ip_address()` rejects
+    the brackets outright (raises `ValueError` for the literal string
+    `"[::1]"`, while `"::1"` parses fine). This was a real bug found
+    via execution: `http://[::1]/hook` sailed through ingestion
+    validation unblocked, because the un-stripped `"[::1]"` failed to
+    parse, was treated as "must be a hostname," and hostnames are
+    (correctly, for DNS names) not rejected at this layer. Centralized
+    here — rather than duplicated in both `is_blocked_literal_host` and
+    `dart.worker.ssrf_transport`'s own literal-IP check — specifically
+    so this exact class of bug can't reappear in one call site after
+    being fixed in the other.
+    """
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
 def is_blocked_literal_host(host: str) -> bool:
-    """True if `host` is itself a literal IP address string that falls
-    in a blocked range.
+    """True if `host` is itself a literal IP address string (optionally
+    bracket-wrapped, for IPv6) that falls in a blocked range.
 
     Returns `False` for anything that isn't a valid literal IP — i.e.
     a DNS hostname. Resolving DNS names is deliberately not this
     function's job; see the module docstring for why that check lives
     at dispatch time instead.
     """
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
+    ip = parse_ip_literal(host)
+    if ip is None:
         return False  # not a literal IP -- a hostname, out of scope here
     return is_blocked_address(ip)
