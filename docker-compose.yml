@@ -54,6 +54,8 @@ services:
       # Reference/secret pair used by the black-box test's task; a real
       # deployment would set one DART_SIGNING_SECRET__<id> per tenant.
       DART_SIGNING_SECRET__blackbox_test_secret: "whsec_blackbox_test_only"
+      # The secret required by the benchmark script
+      DART_SIGNING_SECRET__benchmark_secret: "whsec_benchmark_test_only"
       # Fast recovery tuning for testing -- production would likely use
       # the 30s default rather than reclaiming after only 3s of silence.
       DART_WORKER_STALE_MIN_IDLE_MS: "3000"
