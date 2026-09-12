@@ -14,7 +14,7 @@ import ipaddress
 
 import pytest
 
-from dart.security.ssrf import is_blocked_address, is_blocked_literal_host
+from dart.security.ssrf import is_blocked_address, is_blocked_literal_host, parse_ip_literal
 
 
 class TestNamedBlockedRanges:
@@ -143,3 +143,70 @@ class TestNonLiteralHostsAreOutOfScope:
     )
     def test_hostnames_return_false_not_an_error(self, hostname: str) -> None:
         assert is_blocked_literal_host(hostname) is False
+
+
+class TestBracketedIPv6Literals:
+    """Regression coverage for a real bug found via execution:
+    `ipaddress.ip_address()` rejects the RFC 3986 bracket-wrapped form
+    a URL's host component uses for IPv6 (`"[::1]"` raises ValueError;
+    `"::1"` parses fine). `http://[::1]/hook` initially sailed through
+    ingestion validation unblocked because of this -- the un-stripped
+    bracketed string was (incorrectly) treated as "must be a DNS
+    hostname" rather than recognized as the loopback literal it is.
+    """
+
+    @pytest.mark.parametrize(
+        "literal",
+        ["[::1]", "[fe80::1]", "[fc00::1]", "[ff02::1]", "[::ffff:127.0.0.1]"],
+    )
+    def test_bracketed_blocked_literals_are_caught(self, literal: str) -> None:
+        assert is_blocked_literal_host(literal) is True
+
+    @pytest.mark.parametrize(
+        "literal", ["[2606:4700:4700::1111]", "[2001:4860:4860::8888]"]
+    )
+    def test_bracketed_public_literals_are_allowed(self, literal: str) -> None:
+        assert is_blocked_literal_host(literal) is False
+
+    def test_bracketed_and_unbracketed_forms_agree(self) -> None:
+        """The bracket wrapping must never change the classification
+        outcome -- same address, same answer, either way it's spelled."""
+        assert is_blocked_literal_host("::1") == is_blocked_literal_host("[::1]") is True
+        assert (
+            is_blocked_literal_host("2606:4700:4700::1111")
+            == is_blocked_literal_host("[2606:4700:4700::1111]")
+            is False
+        )
+
+    def test_malformed_brackets_are_treated_as_a_hostname_not_an_error(self) -> None:
+        """`[not-an-ip]` strips to `not-an-ip`, which still doesn't
+        parse as an IP -- correctly falls through to "hostname, out of
+        scope," not a crash."""
+        assert is_blocked_literal_host("[not-an-ip]") is False
+
+
+class TestParseIPLiteral:
+    """Direct tests for the shared helper both `is_blocked_literal_host`
+    and `dart.worker.ssrf_transport.SSRFSafeTransport` now use, rather
+    than each maintaining its own bracket-handling logic."""
+
+    def test_strips_brackets_and_parses(self) -> None:
+        result = parse_ip_literal("[::1]")
+        assert result is not None
+        assert str(result) == "::1"
+
+    def test_parses_unbracketed_form(self) -> None:
+        result = parse_ip_literal("::1")
+        assert result is not None
+        assert str(result) == "::1"
+
+    def test_parses_ipv4_unaffected_by_bracket_logic(self) -> None:
+        result = parse_ip_literal("127.0.0.1")
+        assert result is not None
+        assert str(result) == "127.0.0.1"
+
+    def test_returns_none_for_a_hostname(self) -> None:
+        assert parse_ip_literal("example.com") is None
+
+    def test_returns_none_for_malformed_bracketed_content(self) -> None:
+        assert parse_ip_literal("[not-an-ip]") is None
