@@ -191,3 +191,21 @@ class TestLiteralIPTargets:
             await transport.handle_async_request(request)
 
         assert inner.call_count == 0
+
+    async def test_bracketed_ipv6_literal_is_recognized_not_treated_as_hostname(
+        self,
+    ) -> None:
+        """Regression test: this exact path originally used its own
+        inline `ipaddress.ip_address(host)` try/except with no bracket
+        stripping, which would have let `http://[::1]/webhook` through
+        as if `[::1]` were a DNS hostname -- the identical bug found
+        (and fixed at the shared root) in the ingestion-time validator.
+        """
+        inner = _CapturingTransport()
+        transport = SSRFSafeTransport(inner)
+
+        request = httpx.Request("POST", "http://[::1]/webhook")
+        with pytest.raises(SSRFBlockedError):
+            await transport.handle_async_request(request)
+
+        assert inner.call_count == 0
