@@ -22,7 +22,7 @@ import socket
 import httpx
 
 from dart.core.exceptions import DartError
-from dart.security.ssrf import is_blocked_address
+from dart.security.ssrf import is_blocked_address, parse_ip_literal
 
 
 class SSRFBlockedError(DartError):
@@ -86,11 +86,15 @@ class SSRFSafeTransport(httpx.AsyncBaseTransport):
 
         # A literal IP to begin with (e.g. a retried task whose URL was
         # already validated, or ingestion validation somehow bypassed)
-        # -- check it directly, no DNS round trip needed.
-        try:
-            literal_ip = ipaddress.ip_address(original_host)
-        except ValueError:
-            literal_ip = None
+        # -- check it directly, no DNS round trip needed. Uses the
+        # shared parse_ip_literal (not a local ipaddress.ip_address()
+        # try/except) specifically so the bracket-stripping fix for
+        # IPv6 literals lives in exactly one place -- this code
+        # originally had its own inline try/except here, which would
+        # have carried the identical "[::1] parses as a hostname, not
+        # an IP" bug found in the ingestion-time validator, just not
+        # yet caught by a test exercising this exact path.
+        literal_ip = parse_ip_literal(original_host)
 
         if literal_ip is not None:
             if is_blocked_address(literal_ip):
